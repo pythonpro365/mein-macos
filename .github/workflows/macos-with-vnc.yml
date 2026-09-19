@@ -34,11 +34,9 @@ jobs:
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Install Tailscale via Homebrew ====="
+        echo "===== 1. Install Tailscale ====="
         brew install --cask tailscale || brew install tailscale
 
-        echo "===== 2. Locate tailscaled binary ====="
-        # Homebrew legt die Binaries je nach Version an verschiedenen Stellen ab
         TAILSCALED="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscaled -type f 2>/dev/null | head -n1 || true)"
         TAILSCALE_CLI="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
 
@@ -50,7 +48,7 @@ jobs:
           exit 1
         fi
 
-        echo "===== 3. Start tailscaled in userspace mode (no sudo needed) ====="
+        echo "===== 2. Start tailscaled (userspace) ====="
         sudo mkdir -p /var/lib/tailscale /var/run/tailscale
         sudo "$TAILSCALED" \
           --tun=userspace-networking \
@@ -59,16 +57,34 @@ jobs:
           > /tmp/tailscaled.log 2>&1 &
         disown
 
-        sleep 5
+        sleep 8
 
-        echo "===== 4. tailscale up ====="
-        sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock up \
+        echo "===== 3. Check tailscaled is alive ====="
+        if ! sudo test -S /var/run/tailscale/tailscaled.sock; then
+          echo "::error::tailscaled socket nicht vorhanden – Daemon läuft nicht."
+          cat /tmp/tailscaled.log || true
+          exit 1
+        fi
+        echo "Socket OK."
+
+        echo "===== 4. tailscale up mit hartem Timeout ====="
+        timeout 90s sudo "$TAILSCALE_CLI" \
+          --socket=/var/run/tailscale/tailscaled.sock \
+          up \
           --authkey="$TAILSCALE_AUTH_KEY" \
           --hostname="gha-macos-vnc" \
-          --accept-routes
+          --timeout=45s \
+          --reset || {
+            echo "::error::tailscale up fehlgeschlagen oder Timeout."
+            echo "--- tailscaled.log ---"
+            cat /tmp/tailscaled.log || true
+            echo "--- status ---"
+            timeout 10s sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
+            exit 1
+          }
 
         echo "===== 5. Tailscale status ====="
-        sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
+        sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status
 
     - name: Show Tailscale IP
       run: |

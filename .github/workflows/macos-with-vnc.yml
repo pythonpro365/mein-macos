@@ -13,13 +13,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup VNC + ngrok
+    - name: Setup VNC
       env:
-        NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
-        VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
         VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
       run: |
-        set -e
+        set -Eeuo pipefail
 
         echo "===== 1. Enable macOS Screen Sharing (VNC) ====="
         sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
@@ -28,39 +26,25 @@ jobs:
           -clientopts -setvnclegacy -vnclegacy yes \
           -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
 
-        echo "===== 2. Install ngrok ====="
-        brew install ngrok/ngrok/ngrok || true
+        echo "VNC aktiviert."
 
-        echo "===== 3. Configure ngrok (fresh) ====="
-        rm -f "$HOME/.config/ngrok/ngrok.yml"
-        ngrok config add-authtoken "$NGROK_AUTH_TOKEN"
+    - name: Setup Tailscale
+      uses: tailscale/github-action@v2
+      with:
+        authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        version: latest
 
-        echo "===== 4. Start ngrok in background ====="
-        nohup ngrok tcp 5900 > /tmp/ngrok.log 2>&1 &
-        disown
-
-        echo "===== 5. Wait for ngrok API ====="
-        for i in $(seq 1 30); do
-          if curl -s http://127.0.0.1:4040/api/tunnels >/dev/null 2>&1; then
-            echo "ngrok up after $i attempts"
-            break
-          fi
-          echo "Waiting for ngrok ($i/30)..."
-          sleep 2
-        done
-
-        echo "===== ngrok log ====="
-        cat /tmp/ngrok.log || true
-
-    - name: Show VNC connection address
+    - name: Show Tailscale IP
       run: |
         echo "=========================================="
         echo "         VNC CONNECTION INFO"
         echo "=========================================="
-        ADDR=$(curl -s http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[0].public_url' | sed 's|tcp://||')
-        echo "Address  : $ADDR"
-        echo "User     : vncuser (or just use the VNC password)"
-        echo "Password : (value of your VNC_PASSWORD secret)"
+        TS_IP="$(tailscale ip -4 | head -n1)"
+        echo "Address  : $TS_IP  (Port 5900 – Standard)"
+        echo "User     : vncuser"
+        echo "Password : (aus deinem VNC_PASSWORD Secret)"
+        echo ""
+        echo "RealVNC-Adresse: $TS_IP:5900"
         echo "=========================================="
 
     - name: Keep session alive (tmate)

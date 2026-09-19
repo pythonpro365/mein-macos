@@ -13,34 +13,33 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup VNC with dedicated user
+    - name: Setup TigerVNC server
       env:
-        VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
+        VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Create dedicated macOS user 'vncuser' ====="
-        sudo sysadminctl -addUser vncuser \
-          -fullName "VNC User" \
-          -password "$VNC_USER_PASSWORD" \
-          -home /Users/vncuser \
-          -shell /bin/bash
+        echo "===== 1. Install TigerVNC server ====="
+        brew install tigervnc
 
-        # Zur Admin-Gruppe hinzufügen (erforderlich für Bildschirmfreigabe)
-        sudo dseditgroup -o edit -a vncuser -t user admin
-        sudo dseditgroup -o edit -a vncuser -t user _developer
+        echo "===== 2. Set VNC password ====="
+        mkdir -p "$HOME/.vnc"
+        echo "$VNC_PASSWORD" | vncpasswd -f > "$HOME/.vnc/passwd"
+        chmod 600 "$HOME/.vnc/passwd"
 
-        echo "===== 2. Enable Screen Sharing restricted to vncuser ====="
-        sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-          -activate -configure -access -on \
-          -restart -agent -privs -all \
-          -allowAccessFor -specifiedUsers \
-          -users vncuser
+        echo "===== 3. Kill any old VNC session ====="
+        vncserver -kill :1 2>/dev/null || true
+        rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
 
-        echo "===== 3. Verify user ====="
-        id vncuser || true
+        echo "===== 4. Start TigerVNC server on display :1 (port 5901) ====="
+        vncserver :1 -geometry 1920x1080 -depth 24 -localhost no
 
-        echo "VNC mit Benutzer 'vncuser' aktiviert."
+        echo "===== 5. Verify server is listening ====="
+        sleep 3
+        lsof -iTCP:5901 -sTCP:LISTEN || netstat -an | grep 5901 || true
+        ps aux | grep -i vnc | grep -v grep || true
+
+        echo "TigerVNC läuft auf Port 5901."
 
     - name: Setup Tailscale (CLI, macOS)
       env:
@@ -94,8 +93,6 @@ jobs:
         echo "Socket OK."
 
         echo "===== 6. tailscale up ====="
-        # macOS hat kein "timeout" Kommando.
-        # tailscale up selbst bekommt --timeout=45s, das reicht.
         sudo "$TAILSCALE_CLI" \
           --socket=/var/run/tailscale/tailscaled.sock \
           up \
@@ -104,9 +101,7 @@ jobs:
           --timeout=45s \
           --reset || {
             echo "::error::tailscale up fehlgeschlagen oder Timeout."
-            echo "--- tailscaled.log ---"
             cat /tmp/tailscaled.log || true
-            echo "--- status ---"
             sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
             exit 1
           }
@@ -125,12 +120,11 @@ jobs:
         echo "=========================================="
         TS_IP="$(sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock ip -4 | head -n1 || true)"
         echo "Address  : $TS_IP"
-        echo "Port     : 5900"
-        echo "User     : vncuser"
-        echo "Password : (value of your VNC_USER_PASSWORD secret)"
+        echo "Port     : 5901"
+        echo "Password : (value of your VNC_PASSWORD secret)"
         echo ""
         echo "TigerVNC command:"
-        echo "  vncviewer.exe -SecurityTypes=DH vncuser@$TS_IP:5900"
+        echo "  vncviewer.exe $TS_IP:5901"
         echo "=========================================="
 
     - name: Keep session alive (tmate)

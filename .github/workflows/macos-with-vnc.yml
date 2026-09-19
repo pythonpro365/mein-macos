@@ -28,18 +28,58 @@ jobs:
 
         echo "VNC aktiviert."
 
-    - name: Setup Tailscale
-      uses: tailscale/github-action@v2
-      with:
-        authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-        version: latest
+    - name: Setup Tailscale (manual, macOS)
+      env:
+        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      run: |
+        set -Eeuo pipefail
+
+        echo "===== 1. Install Tailscale via Homebrew ====="
+        brew install --cask tailscale || brew install tailscale
+
+        echo "===== 2. Locate tailscaled binary ====="
+        # Homebrew legt die Binaries je nach Version an verschiedenen Stellen ab
+        TAILSCALED="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscaled -type f 2>/dev/null | head -n1 || true)"
+        TAILSCALE_CLI="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
+
+        echo "tailscaled : $TAILSCALED"
+        echo "tailscale  : $TAILSCALE_CLI"
+
+        if [[ -z "$TAILSCALE_CLI" ]]; then
+          echo "::error::Tailscale CLI nicht gefunden."
+          exit 1
+        fi
+
+        echo "===== 3. Start tailscaled in userspace mode (no sudo needed) ====="
+        sudo mkdir -p /var/lib/tailscale /var/run/tailscale
+        sudo "$TAILSCALED" \
+          --tun=userspace-networking \
+          --state=/var/lib/tailscale/tailscaled.state \
+          --socket=/var/run/tailscale/tailscaled.sock \
+          > /tmp/tailscaled.log 2>&1 &
+        disown
+
+        sleep 5
+
+        echo "===== 4. tailscale up ====="
+        sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock up \
+          --authkey="$TAILSCALE_AUTH_KEY" \
+          --hostname="gha-macos-vnc" \
+          --accept-routes
+
+        echo "===== 5. Tailscale status ====="
+        sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
 
     - name: Show Tailscale IP
       run: |
+        set -Eeuo pipefail
+
+        TAILSCALE_CLI="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
+
         echo "=========================================="
         echo "         VNC CONNECTION INFO"
         echo "=========================================="
-        TS_IP="$(tailscale ip -4 | head -n1)"
+        TS_IP="$(sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock ip -4 | head -n1 || true)"
         echo "Address  : $TS_IP  (Port 5900 – Standard)"
         echo "User     : vncuser"
         echo "Password : (aus deinem VNC_PASSWORD Secret)"

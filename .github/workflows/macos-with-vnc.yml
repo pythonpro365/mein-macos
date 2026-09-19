@@ -13,6 +13,35 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Prevent display sleep and ensure GUI session
+      run: |
+        set -Eeuo pipefail
+
+        echo "===== 1. Show current console user ====="
+        stat -f "%Su" /dev/console || true
+
+        echo "===== 2. Disable screensaver ====="
+        defaults -currentHost write com.apple.screensaver idleTime 0 || true
+        defaults write com.apple.screensaver idleTime 0 || true
+
+        echo "===== 3. Disable display sleep and system sleep ====="
+        sudo pmset -a displaysleep 0
+        sudo pmset -a sleep 0
+        sudo pmset -a disksleep 0
+        sudo pmset -a womp 1 || true
+
+        echo "===== 4. Start caffeinate in background ====="
+        nohup caffeinate -disu > /tmp/caffeinate.log 2>&1 &
+        disown
+        sleep 2
+        ps aux | grep caffeinate | grep -v grep || true
+
+        echo "===== 5. Wake display (simulate key press) ====="
+        osascript -e 'tell application "System Events" to key code 49' || true
+        sleep 1
+
+        echo "Display sollte jetzt wach sein."
+
     - name: Setup VNC (Apple Screen Sharing + Legacy password)
       env:
         VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}

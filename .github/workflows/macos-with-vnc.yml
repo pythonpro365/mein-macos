@@ -13,33 +13,25 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup TigerVNC server
+    - name: Setup VNC (Apple Screen Sharing + Legacy password)
       env:
         VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Install TigerVNC server ====="
-        brew install tigervnc
+        echo "===== 1. Enable macOS Screen Sharing with legacy VNC password ====="
+        sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+          -activate -configure -access -on \
+          -restart -agent -privs -all \
+          -allowAccessFor -allUsers \
+          -clientopts -setvnclegacy -vnclegacy yes \
+          -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
 
-        echo "===== 2. Set VNC password ====="
-        mkdir -p "$HOME/.vnc"
-        echo "$VNC_PASSWORD" | vncpasswd -f > "$HOME/.vnc/passwd"
-        chmod 600 "$HOME/.vnc/passwd"
-
-        echo "===== 3. Kill any old VNC session ====="
-        vncserver -kill :1 2>/dev/null || true
-        rm -f /tmp/.X1-lock /tmp/.X11-unix/X1 2>/dev/null || true
-
-        echo "===== 4. Start TigerVNC server on display :1 (port 5901) ====="
-        vncserver :1 -geometry 1920x1080 -depth 24 -localhost no
-
-        echo "===== 5. Verify server is listening ====="
+        echo "===== 2. Verify VNC is listening on 5900 ====="
         sleep 3
-        lsof -iTCP:5901 -sTCP:LISTEN || netstat -an | grep 5901 || true
-        ps aux | grep -i vnc | grep -v grep || true
+        sudo lsof -iTCP:5900 -sTCP:LISTEN || true
 
-        echo "TigerVNC läuft auf Port 5901."
+        echo "VNC aktiviert (Legacy-Passwort)."
 
     - name: Setup Tailscale (CLI, macOS)
       env:
@@ -47,14 +39,11 @@ jobs:
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Uninstall GUI cask leftovers ====="
         brew uninstall --cask tailscale-app 2>/dev/null || true
         brew uninstall --cask tailscale 2>/dev/null || true
 
-        echo "===== 2. Install Tailscale CLI formula ====="
         brew install tailscale
 
-        echo "===== 3. Locate binaries ====="
         TAILSCALED="$(command -v tailscaled || true)"
         TAILSCALE_CLI="$(command -v tailscale || true)"
 
@@ -73,7 +62,6 @@ jobs:
           exit 1
         fi
 
-        echo "===== 4. Start tailscaled (userspace) ====="
         sudo mkdir -p /var/lib/tailscale /var/run/tailscale
         sudo "$TAILSCALED" \
           --tun=userspace-networking \
@@ -84,15 +72,12 @@ jobs:
 
         sleep 8
 
-        echo "===== 5. Check tailscaled socket ====="
         if ! sudo test -S /var/run/tailscale/tailscaled.sock; then
           echo "::error::tailscaled socket nicht vorhanden."
           cat /tmp/tailscaled.log || true
           exit 1
         fi
-        echo "Socket OK."
 
-        echo "===== 6. tailscale up ====="
         sudo "$TAILSCALE_CLI" \
           --socket=/var/run/tailscale/tailscaled.sock \
           up \
@@ -102,11 +87,9 @@ jobs:
           --reset || {
             echo "::error::tailscale up fehlgeschlagen oder Timeout."
             cat /tmp/tailscaled.log || true
-            sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
             exit 1
           }
 
-        echo "===== 7. Tailscale status ====="
         sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status
 
     - name: Show Tailscale IP
@@ -120,11 +103,11 @@ jobs:
         echo "=========================================="
         TS_IP="$(sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock ip -4 | head -n1 || true)"
         echo "Address  : $TS_IP"
-        echo "Port     : 5901"
+        echo "Port     : 5900"
         echo "Password : (value of your VNC_PASSWORD secret)"
         echo ""
         echo "TigerVNC command:"
-        echo "  vncviewer.exe $TS_IP:5901"
+        echo "  .\\vncviewer.exe -SecurityTypes=VncAuth $TS_IP:5900"
         echo "=========================================="
 
     - name: Keep session alive (tmate)

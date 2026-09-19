@@ -48,6 +48,20 @@ jobs:
       run: |
         set -Eeuo pipefail
 
+        echo "===== 0. Grant Screen Recording + Screen Control via TCC ====="
+        TCCDB="/Library/Application Support/com.apple.TCC/TCC.db"
+
+        sudo sqlite3 "$TCCDB" "SELECT service FROM access LIMIT 1;" || echo "TCC.db nicht zugänglich"
+
+        for SERVICE in kTCCServiceScreenCapture kTCCServiceRemoteDesktop; do
+          for CLIENT in com.apple.screensharing.agent com.apple.RemoteDesktop.agent; do
+            sudo sqlite3 "$TCCDB" \
+              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$SERVICE', '$CLIENT', 0, 2, 2, 1);" 2>/dev/null || true
+          done
+        done
+
+        echo "TCC permissions gesetzt."
+
         echo "===== 1. Enable macOS Screen Sharing with legacy VNC password ====="
         sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
           -activate -configure -access -on \
@@ -56,7 +70,12 @@ jobs:
           -clientopts -setvnclegacy -vnclegacy yes \
           -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
 
-        echo "===== 2. Verify VNC is listening on 5900 ====="
+        echo "===== 2. Restart ARD agent to pick up TCC changes ====="
+        sudo killall ARDAgent 2>/dev/null || true
+        sleep 2
+        sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
+
+        echo "===== 3. Verify VNC is listening on 5900 ====="
         sleep 3
         sudo lsof -iTCP:5900 -sTCP:LISTEN || true
 

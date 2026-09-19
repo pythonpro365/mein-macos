@@ -34,7 +34,7 @@ jobs:
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Uninstall any GUI cask leftovers ====="
+        echo "===== 1. Uninstall GUI cask leftovers ====="
         brew uninstall --cask tailscale-app 2>/dev/null || true
         brew uninstall --cask tailscale 2>/dev/null || true
 
@@ -45,7 +45,6 @@ jobs:
         TAILSCALED="$(command -v tailscaled || true)"
         TAILSCALE_CLI="$(command -v tailscale || true)"
 
-        # Falls nicht im PATH, in Homebrew-Verzeichnissen suchen
         if [[ -z "$TAILSCALED" ]]; then
           TAILSCALED="$(find /opt/homebrew /usr/local -name tailscaled -type f 2>/dev/null | head -n1 || true)"
         fi
@@ -58,8 +57,6 @@ jobs:
 
         if [[ -z "$TAILSCALED" || -z "$TAILSCALE_CLI" ]]; then
           echo "::error::Tailscale binaries nicht gefunden."
-          echo "brew --prefix: $(brew --prefix)"
-          ls -la "$(brew --prefix)/bin" | grep -i tailscale || true
           exit 1
         fi
 
@@ -82,8 +79,10 @@ jobs:
         fi
         echo "Socket OK."
 
-        echo "===== 6. tailscale up (timeout 90s) ====="
-        timeout 90s sudo "$TAILSCALE_CLI" \
+        echo "===== 6. tailscale up ====="
+        # macOS hat kein "timeout" Kommando.
+        # tailscale up selbst bekommt --timeout=45s, das reicht.
+        sudo "$TAILSCALE_CLI" \
           --socket=/var/run/tailscale/tailscaled.sock \
           up \
           --authkey="$TAILSCALE_AUTH_KEY" \
@@ -91,8 +90,10 @@ jobs:
           --timeout=45s \
           --reset || {
             echo "::error::tailscale up fehlgeschlagen oder Timeout."
+            echo "--- tailscaled.log ---"
             cat /tmp/tailscaled.log || true
-            timeout 10s sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
+            echo "--- status ---"
+            sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
             exit 1
           }
 

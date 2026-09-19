@@ -28,27 +28,42 @@ jobs:
 
         echo "VNC aktiviert."
 
-    - name: Setup Tailscale (manual, macOS)
+    - name: Setup Tailscale (CLI, macOS)
       env:
         TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Install Tailscale ====="
-        brew install --cask tailscale || brew install tailscale
+        echo "===== 1. Uninstall any GUI cask leftovers ====="
+        brew uninstall --cask tailscale-app 2>/dev/null || true
+        brew uninstall --cask tailscale 2>/dev/null || true
 
-        TAILSCALED="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscaled -type f 2>/dev/null | head -n1 || true)"
-        TAILSCALE_CLI="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
+        echo "===== 2. Install Tailscale CLI formula ====="
+        brew install tailscale
+
+        echo "===== 3. Locate binaries ====="
+        TAILSCALED="$(command -v tailscaled || true)"
+        TAILSCALE_CLI="$(command -v tailscale || true)"
+
+        # Falls nicht im PATH, in Homebrew-Verzeichnissen suchen
+        if [[ -z "$TAILSCALED" ]]; then
+          TAILSCALED="$(find /opt/homebrew /usr/local -name tailscaled -type f 2>/dev/null | head -n1 || true)"
+        fi
+        if [[ -z "$TAILSCALE_CLI" ]]; then
+          TAILSCALE_CLI="$(find /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
+        fi
 
         echo "tailscaled : $TAILSCALED"
         echo "tailscale  : $TAILSCALE_CLI"
 
-        if [[ -z "$TAILSCALE_CLI" ]]; then
-          echo "::error::Tailscale CLI nicht gefunden."
+        if [[ -z "$TAILSCALED" || -z "$TAILSCALE_CLI" ]]; then
+          echo "::error::Tailscale binaries nicht gefunden."
+          echo "brew --prefix: $(brew --prefix)"
+          ls -la "$(brew --prefix)/bin" | grep -i tailscale || true
           exit 1
         fi
 
-        echo "===== 2. Start tailscaled (userspace) ====="
+        echo "===== 4. Start tailscaled (userspace) ====="
         sudo mkdir -p /var/lib/tailscale /var/run/tailscale
         sudo "$TAILSCALED" \
           --tun=userspace-networking \
@@ -59,15 +74,15 @@ jobs:
 
         sleep 8
 
-        echo "===== 3. Check tailscaled is alive ====="
+        echo "===== 5. Check tailscaled socket ====="
         if ! sudo test -S /var/run/tailscale/tailscaled.sock; then
-          echo "::error::tailscaled socket nicht vorhanden – Daemon läuft nicht."
+          echo "::error::tailscaled socket nicht vorhanden."
           cat /tmp/tailscaled.log || true
           exit 1
         fi
         echo "Socket OK."
 
-        echo "===== 4. tailscale up mit hartem Timeout ====="
+        echo "===== 6. tailscale up (timeout 90s) ====="
         timeout 90s sudo "$TAILSCALE_CLI" \
           --socket=/var/run/tailscale/tailscaled.sock \
           up \
@@ -76,21 +91,19 @@ jobs:
           --timeout=45s \
           --reset || {
             echo "::error::tailscale up fehlgeschlagen oder Timeout."
-            echo "--- tailscaled.log ---"
             cat /tmp/tailscaled.log || true
-            echo "--- status ---"
             timeout 10s sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status || true
             exit 1
           }
 
-        echo "===== 5. Tailscale status ====="
+        echo "===== 7. Tailscale status ====="
         sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status
 
     - name: Show Tailscale IP
       run: |
         set -Eeuo pipefail
 
-        TAILSCALE_CLI="$(find /Applications/Tailscale.app /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
+        TAILSCALE_CLI="$(command -v tailscale || find /opt/homebrew /usr/local -name tailscale -type f 2>/dev/null | head -n1 || true)"
 
         echo "=========================================="
         echo "         VNC CONNECTION INFO"

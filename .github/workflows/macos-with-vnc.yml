@@ -13,20 +13,34 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Setup VNC
+    - name: Setup VNC with dedicated user
       env:
-        VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
+        VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Enable macOS Screen Sharing (VNC) ====="
+        echo "===== 1. Create dedicated macOS user 'vncuser' ====="
+        sudo sysadminctl -addUser vncuser \
+          -fullName "VNC User" \
+          -password "$VNC_USER_PASSWORD" \
+          -home /Users/vncuser \
+          -shell /bin/bash
+
+        # Zur Admin-Gruppe hinzufügen (erforderlich für Bildschirmfreigabe)
+        sudo dseditgroup -o edit -a vncuser -t user admin
+        sudo dseditgroup -o edit -a vncuser -t user _developer
+
+        echo "===== 2. Enable Screen Sharing restricted to vncuser ====="
         sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
           -activate -configure -access -on \
           -restart -agent -privs -all \
-          -clientopts -setvnclegacy -vnclegacy yes \
-          -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
+          -allowAccessFor -specifiedUsers \
+          -users vncuser
 
-        echo "VNC aktiviert."
+        echo "===== 3. Verify user ====="
+        id vncuser || true
+
+        echo "VNC mit Benutzer 'vncuser' aktiviert."
 
     - name: Setup Tailscale (CLI, macOS)
       env:
@@ -110,11 +124,13 @@ jobs:
         echo "         VNC CONNECTION INFO"
         echo "=========================================="
         TS_IP="$(sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock ip -4 | head -n1 || true)"
-        echo "Address  : $TS_IP  (Port 5900 – Standard)"
+        echo "Address  : $TS_IP"
+        echo "Port     : 5900"
         echo "User     : vncuser"
-        echo "Password : (aus deinem VNC_PASSWORD Secret)"
+        echo "Password : (value of your VNC_USER_PASSWORD secret)"
         echo ""
-        echo "RealVNC-Adresse: $TS_IP:5900"
+        echo "TigerVNC command:"
+        echo "  vncviewer.exe -SecurityTypes=DH vncuser@$TS_IP:5900"
         echo "=========================================="
 
     - name: Keep session alive (tmate)

@@ -48,13 +48,23 @@ jobs:
       run: |
         set -Eeuo pipefail
 
-        echo "===== 0. Grant Screen Recording + Screen Control via TCC ====="
+        echo "===== 0. Grant Screen Recording + Screen Control + Input via TCC ====="
         TCCDB="/Library/Application Support/com.apple.TCC/TCC.db"
 
         sudo sqlite3 "$TCCDB" "SELECT service FROM access LIMIT 1;" || echo "TCC.db nicht zugänglich"
 
-        for SERVICE in kTCCServiceScreenCapture kTCCServiceRemoteDesktop; do
-          for CLIENT in com.apple.screensharing.agent com.apple.RemoteDesktop.agent; do
+        for SERVICE in \
+          kTCCServiceScreenCapture \
+          kTCCServiceRemoteDesktop \
+          kTCCServicePostEvent \
+          kTCCServiceListenEvent \
+          kTCCServiceAccessibility
+        do
+          for CLIENT in \
+            com.apple.screensharing.agent \
+            com.apple.RemoteDesktop.agent \
+            /System/Library/CoreServices/RemoteManagement/ARDAgent.app
+          do
             sudo sqlite3 "$TCCDB" \
               "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$SERVICE', '$CLIENT', 0, 2, 2, 1);" 2>/dev/null || true
           done

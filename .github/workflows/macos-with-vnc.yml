@@ -48,24 +48,29 @@ jobs:
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Set password for 'runner' user ====="
-        sudo sysadminctl -resetPasswordFor runner \
-          -newPassword "$RUNNER_PASSWORD" \
-          -admin || {
-            echo "::warning::sysadminctl fehlgeschlagen, Fallback via dscl"
-            echo "$RUNNER_PASSWORD" | sudo dscl . -passwd /Users/runner 2>&1 || true
-          }
+        echo "===== 1. Create /etc/kcpassword for auto-login ====="
+        python3 -c "import sys; pw=sys.argv[1].encode(); k=bytes([0x7D,0x89,0x52,0x23,0xD2,0xBC,0xDD,0xEA,0xA3,0xB9,0x1F,0xFA]); pw+=b'\x00'*((12-len(pw)%12)%12); sys.stdout.buffer.write(bytes(a^b for a,b in zip(pw,(k*(len(pw)//12+1))[:len(pw)])))" "$RUNNER_PASSWORD" | sudo tee /etc/kcpassword > /dev/null
 
-        echo "Passwort gesetzt (oder Fallback versucht)."
+        sudo chmod 600 /etc/kcpassword
+        sudo chown root:wheel /etc/kcpassword
+        echo "kcpassword erstellt:"
+        ls -la /etc/kcpassword
 
-        echo "===== 2. Enable auto-login as runner ====="
+        echo "===== 2. Set autoLoginUser ====="
         sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "runner"
-        sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUserPassword -string "$RUNNER_PASSWORD" 2>/dev/null || true
+        sudo defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser
 
-        echo "Auto-Login aktiviert."
+        echo "===== 3. Disable lock screen password prompt ====="
+        sudo defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLockImmediate -bool true || true
+        defaults write com.apple.screensaver askForPassword -int 0 || true
+        defaults write com.apple.screensaver askForPasswordDelay -int 0 || true
 
-        echo "===== 3. Verify ====="
-        dscl . -read /Users/runner RealName || true
+        echo "===== 4. Restart LoginWindow so auto-login kicks in ====="
+        sudo launchctl kickstart -k system/com.apple.loginwindow || true
+        sleep 15
+
+        echo "===== 5. Verify console user ====="
+        stat -f "%Su" /dev/console || true
 
     - name: Setup VNC (Apple Screen Sharing + Legacy password)
       env:
@@ -78,20 +83,9 @@ jobs:
 
         sudo sqlite3 "$TCCDB" "SELECT service FROM access LIMIT 1;" || echo "TCC.db nicht zugänglich"
 
-        for SERVICE in \
-          kTCCServiceScreenCapture \
-          kTCCServiceRemoteDesktop \
-          kTCCServicePostEvent \
-          kTCCServiceListenEvent \
-          kTCCServiceAccessibility
-        do
-          for CLIENT in \
-            com.apple.screensharing.agent \
-            com.apple.RemoteDesktop.agent \
-            /System/Library/CoreServices/RemoteManagement/ARDAgent.app
-          do
-            sudo sqlite3 "$TCCDB" \
-              "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$SERVICE', '$CLIENT', 0, 2, 2, 1);" 2>/dev/null || true
+        for SERVICE in kTCCServiceScreenCapture kTCCServiceRemoteDesktop kTCCServicePostEvent kTCCServiceListenEvent kTCCServiceAccessibility; do
+          for CLIENT in com.apple.screensharing.agent com.apple.RemoteDesktop.agent /System/Library/CoreServices/RemoteManagement/ARDAgent.app; do
+            sudo sqlite3 "$TCCDB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version) VALUES ('$SERVICE', '$CLIENT', 0, 2, 2, 1);" 2>/dev/null || true
           done
         done
 

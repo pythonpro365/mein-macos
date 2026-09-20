@@ -13,18 +13,18 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Prevent display sleep and ensure GUI session
+    - name: Prevent display sleep
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Show current console user ====="
+        echo "===== 1. Current console user ====="
         stat -f "%Su" /dev/console || true
 
         echo "===== 2. Disable screensaver ====="
         defaults -currentHost write com.apple.screensaver idleTime 0 || true
         defaults write com.apple.screensaver idleTime 0 || true
 
-        echo "===== 3. Disable display sleep and system sleep ====="
+        echo "===== 3. Disable display sleep ====="
         sudo pmset -a displaysleep 0
         sudo pmset -a sleep 0
         sudo pmset -a disksleep 0
@@ -36,52 +36,55 @@ jobs:
         sleep 2
         ps aux | grep caffeinate | grep -v grep || true
 
-        echo "===== 5. Wake display (simulate key press) ====="
-        osascript -e 'tell application "System Events" to key code 49' || true
-        sleep 1
+        echo "Display bleibt jetzt wach."
 
-        echo "Display sollte jetzt wach sein."
-
-    - name: Set runner password and enable auto-login
+    - name: Create dedicated VNC user
       env:
-        RUNNER_PASSWORD: ${{ secrets.RUNNER_PASSWORD }}
+        VNC_USER_PASSWORD: ${{ secrets.VNC_USER_PASSWORD }}
       run: |
         set -Eeuo pipefail
 
-        echo "===== 1. Create /etc/kcpassword for auto-login ====="
-        python3 -c "import sys; pw=sys.argv[1].encode(); k=bytes([0x7D,0x89,0x52,0x23,0xD2,0xBC,0xDD,0xEA,0xA3,0xB9,0x1F,0xFA]); pw+=b'\x00'*((12-len(pw)%12)%12); sys.stdout.buffer.write(bytes(a^b for a,b in zip(pw,(k*(len(pw)//12+1))[:len(pw)])))" "$RUNNER_PASSWORD" | sudo tee /etc/kcpassword > /dev/null
+        echo "===== 1. Create user 'vncuser' ====="
+        # Home anlegen, User anlegen
+        sudo mkdir -p /Users/vncuser
+        sudo chown -R 501:20 /Users/vncuser 2>/dev/null || true
 
-        sudo chmod 600 /etc/kcpassword
-        sudo chown root:wheel /etc/kcpassword
-        echo "kcpassword erstellt:"
-        ls -la /etc/kcpassword
+        # User mit sysadminctl anlegen
+        sudo sysadminctl -addUser vncuser \
+          -fullName "VNC User" \
+          -password "$VNC_USER_PASSWORD" \
+          -home /Users/vncuser \
+          -shell /bin/bash \
+          -admin || {
+            echo "::warning::sysadminctl -addUser fehlgeschlagen, versuche dscl"
+            # Fallback via dscl
+            sudo dscl . -create /Users/vncuser
+            sudo dscl . -create /Users/vncuser UserShell /bin/bash
+            sudo dscl . -create /Users/vncuser RealName "VNC User"
+            sudo dscl . -create /Users/vncuser UniqueID 550
+            sudo dscl . -create /Users/vncuser PrimaryGroupID 20
+            sudo dscl . -create /Users/vncuser NFSHomeDirectory /Users/vncuser
+            sudo dscl . -passwd /Users/vncuser "$VNC_USER_PASSWORD"
+            sudo createhomedir -c -u vncuser || true
+          }
 
-        echo "===== 2. Set autoLoginUser ====="
-        sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "runner"
-        sudo defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser
+        echo "===== 2. Verify user exists ====="
+        id vncuser || dscl . -read /Users/vncuser || true
 
-        echo "===== 3. Disable lock screen password prompt ====="
-        sudo defaults write /Library/Preferences/com.apple.loginwindow DisableScreenLockImmediate -bool true || true
-        defaults write com.apple.screensaver askForPassword -int 0 || true
-        defaults write com.apple.screensaver askForPasswordDelay -int 0 || true
+        echo "===== 3. Grant admin ====="
+        sudo dseditgroup -o edit -a vncuser -t user admin || true
+        sudo dseditgroup -o edit -a vncuser -t user _developer || true
 
-        echo "===== 4. Restart LoginWindow so auto-login kicks in ====="
-        sudo launchctl kickstart -k system/com.apple.loginwindow || true
-        sleep 15
-
-        echo "===== 5. Verify console user ====="
-        stat -f "%Su" /dev/console || true
-
-    - name: Setup VNC (Apple Screen Sharing + Legacy password)
+    - name: Setup VNC (Screen Sharing with legacy password)
       env:
         VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
       run: |
         set -Eeuo pipefail
 
-        echo "===== 0. Grant Screen Recording + Screen Control + Input via TCC ====="
+        echo "===== 0. Grant Screen Recording + Control + Input via TCC ====="
         TCCDB="/Library/Application Support/com.apple.TCC/TCC.db"
 
-        sudo sqlite3 "$TCCDB" "SELECT service FROM access LIMIT 1;" || echo "TCC.db nicht zugänglich"
+        sudo sqlite3 "$TCCDB" "SELECT service FROM access LIMIT 1;" || echo "TCC.db nicht lesbar"
 
         for SERVICE in kTCCServiceScreenCapture kTCCServiceRemoteDesktop kTCCServicePostEvent kTCCServiceListenEvent kTCCServiceAccessibility; do
           for CLIENT in com.apple.screensharing.agent com.apple.RemoteDesktop.agent /System/Library/CoreServices/RemoteManagement/ARDAgent.app; do
@@ -99,16 +102,16 @@ jobs:
           -clientopts -setvnclegacy -vnclegacy yes \
           -clientopts -setvncpw -vncpw "$VNC_PASSWORD"
 
-        echo "===== 2. Restart ARD agent to pick up TCC changes ====="
+        echo "===== 2. Restart ARD agent ====="
         sudo killall ARDAgent 2>/dev/null || true
         sleep 2
         sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart -restart -agent
 
-        echo "===== 3. Verify VNC is listening on 5900 ====="
+        echo "===== 3. Verify VNC is listening ====="
         sleep 3
         sudo lsof -iTCP:5900 -sTCP:LISTEN || true
 
-        echo "VNC aktiviert (Legacy-Passwort)."
+        echo "VNC aktiviert."
 
     - name: Setup Tailscale (CLI, macOS)
       env:
@@ -169,7 +172,7 @@ jobs:
 
         sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock status
 
-    - name: Show Tailscale IP
+    - name: Show connection info
       run: |
         set -Eeuo pipefail
 
@@ -181,35 +184,18 @@ jobs:
         TS_IP="$(sudo "$TAILSCALE_CLI" --socket=/var/run/tailscale/tailscaled.sock ip -4 | head -n1 || true)"
         echo "Address  : $TS_IP"
         echo "Port     : 5900"
-        echo "Password : (value of your VNC_PASSWORD secret)"
+        echo ""
+        echo "Login-Variante 1 (neu angelegter User):"
+        echo "  Benutzer : vncuser"
+        echo "  Passwort : (dein VNC_USER_PASSWORD Secret)"
+        echo ""
+        echo "Login-Variante 2 (Standard-User):"
+        echo "  Benutzer : Anka"
+        echo "  Passwort : (leer lassen und Enter)"
         echo ""
         echo "TigerVNC command:"
         echo "  .\\vncviewer.exe -SecurityTypes=VncAuth $TS_IP:5900"
         echo "=========================================="
-
-    - name: Fix WindowServer for VNC rendering
-      run: |
-        set -Eeuo pipefail
-
-        echo "===== 1. Current console user ====="
-        stat -f "%Su" /dev/console || true
-
-        echo "===== 2. Restart WindowServer ====="
-        # WindowServer startet automatisch neu.
-        # Durch autoLoginUser + /etc/kcpassword loggt sich runner
-        # sofort wieder ein – diesmal mit frischem Framebuffer.
-        sudo pkill -9 WindowServer || true
-
-        echo "===== 3. Wait for re-login ====="
-        sleep 20
-
-        echo "===== 4. Verify console user after restart ====="
-        stat -f "%Su" /dev/console || true
-
-        echo "===== 5. Verify VNC still listening ====="
-        sudo lsof -iTCP:5900 -sTCP:LISTEN || true
-
-        echo "WindowServer-Fix fertig."
 
     - name: Keep session alive (tmate)
       uses: mxschmitt/action-tmate@v3

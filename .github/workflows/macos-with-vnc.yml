@@ -187,5 +187,29 @@ jobs:
         echo "  .\\vncviewer.exe -SecurityTypes=VncAuth $TS_IP:5900"
         echo "=========================================="
 
+    - name: Fix WindowServer for VNC rendering
+      run: |
+        set -Eeuo pipefail
+
+        echo "===== 1. Current console user ====="
+        stat -f "%Su" /dev/console || true
+
+        echo "===== 2. Restart WindowServer ====="
+        # WindowServer startet automatisch neu.
+        # Durch autoLoginUser + /etc/kcpassword loggt sich runner
+        # sofort wieder ein – diesmal mit frischem Framebuffer.
+        sudo pkill -9 WindowServer || true
+
+        echo "===== 3. Wait for re-login ====="
+        sleep 20
+
+        echo "===== 4. Verify console user after restart ====="
+        stat -f "%Su" /dev/console || true
+
+        echo "===== 5. Verify VNC still listening ====="
+        sudo lsof -iTCP:5900 -sTCP:LISTEN || true
+
+        echo "WindowServer-Fix fertig."
+
     - name: Keep session alive (tmate)
       uses: mxschmitt/action-tmate@v3

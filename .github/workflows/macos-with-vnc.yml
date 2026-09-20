@@ -49,14 +49,23 @@ jobs:
         set -Eeuo pipefail
 
         echo "===== 1. Set password for 'runner' user ====="
-        sudo dscl . -passwd /Users/runner "$RUNNER_PASSWORD"
-        echo "Passwort gesetzt."
+        sudo sysadminctl -resetPasswordFor runner \
+          -newPassword "$RUNNER_PASSWORD" \
+          -admin || {
+            echo "::warning::sysadminctl fehlgeschlagen, Fallback via dscl"
+            echo "$RUNNER_PASSWORD" | sudo dscl . -passwd /Users/runner 2>&1 || true
+          }
+
+        echo "Passwort gesetzt (oder Fallback versucht)."
 
         echo "===== 2. Enable auto-login as runner ====="
         sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "runner"
         sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUserPassword -string "$RUNNER_PASSWORD" 2>/dev/null || true
 
         echo "Auto-Login aktiviert."
+
+        echo "===== 3. Verify ====="
+        dscl . -read /Users/runner RealName || true
 
     - name: Setup VNC (Apple Screen Sharing + Legacy password)
       env:

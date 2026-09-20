@@ -42,6 +42,22 @@ jobs:
 
         echo "Display sollte jetzt wach sein."
 
+    - name: Set runner password and enable auto-login
+      env:
+        RUNNER_PASSWORD: ${{ secrets.RUNNER_PASSWORD }}
+      run: |
+        set -Eeuo pipefail
+
+        echo "===== 1. Set password for 'runner' user ====="
+        sudo dscl . -passwd /Users/runner "$RUNNER_PASSWORD"
+        echo "Passwort gesetzt."
+
+        echo "===== 2. Enable auto-login as runner ====="
+        sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "runner"
+        sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUserPassword -string "$RUNNER_PASSWORD" 2>/dev/null || true
+
+        echo "Auto-Login aktiviert."
+
     - name: Setup VNC (Apple Screen Sharing + Legacy password)
       env:
         VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
